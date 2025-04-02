@@ -1,0 +1,273 @@
+-- reservation trend by month & year & average reservation count per year
+
+SELECT ARRIVAL_YEAR,
+	ARRIVAL_MONTH,
+	COUNT(*) AS TOTAL_RESERVATION_CNT,
+	AVG(COUNT (*)) OVER (PARTITION BY ARRIVAL_YEAR) AS AVG_RESERVATION_CNT
+FROM CLEANED_HOTEL_BOOKINGS_MV4
+GROUP BY 1,2
+ORDER BY 1,2;
+
+--reservation distribution by market segment each year
+
+SELECT ARRIVAL_YEAR,
+	MARKET_SEGMENT_TYPE,
+	COUNT(*) AS RESERVATION_CNT,
+	ROUND((CAST(COUNT(*) AS NUMERIC) 
+	/ SUM(COUNT(*)) OVER (PARTITION BY ARRIVAL_YEAR) * 100), 2) AS percentage_of_total_in_year
+FROM CLEANED_HOTEL_BOOKINGS_MV4
+GROUP BY ARRIVAL_YEAR,
+	MARKET_SEGMENT_TYPE
+ORDER BY ARRIVAL_YEAR,
+	MARKET_SEGMENT_TYPE;
+		
+--cancelation ratio per year/month
+
+SELECT
+ARRIVAL_YEAR,
+ARRIVAL_MONTH,
+COUNT(*) AS TOTAL_RESERVATION_CNT,
+
+ROUND(
+		(SELECT COUNT(*)
+		FROM CLEANED_HOTEL_BOOKINGS_MV4 AS SUB
+		WHERE BOOKING_STATUS = 'Canceled'
+		AND M.ARRIVAL_YEAR = SUB.ARRIVAL_YEAR) /
+			(SELECT COUNT(*)
+			FROM CLEANED_HOTEL_BOOKINGS_MV4 AS SUB1
+			WHERE M.ARRIVAL_YEAR = SUB1.ARRIVAL_YEAR):: NUMERIC,2) AS AVG_CANCELLATION_RAT_PER_YEAR,
+	
+ROUND(
+		SUM(CASE WHEN BOOKING_STATUS = 'Canceled' THEN 1 ELSE 0 END) /
+			CAST(COUNT(*) AS NUMERIC),2) AS CANCELATION_RATIO
+	
+FROM CLEANED_HOTEL_BOOKINGS_MV4 AS m
+GROUP BY 1,2
+ORDER BY 1,2;
+
+--cancellation ratio per market segment & year
+
+SELECT ARRIVAL_YEAR,
+	MARKET_SEGMENT_TYPE,
+	COUNT(*) AS TOTAL_RESERVATION_CNT,
+	ROUND(SUM(CASE WHEN BOOKING_STATUS = 'Canceled' THEN 1 ELSE 0 END) / 
+		  CAST(COUNT(*) AS NUMERIC),2) AS CANCELATION_RATIO
+FROM CLEANED_HOTEL_BOOKINGS_MV4
+GROUP BY 1,2
+ORDER BY 1,2;
+
+-- most popular guest composition
+
+SELECT NO_OF_ADULTS || ' adl ' || NO_OF_CHILDREN || ' chl' AS GUEST_COMPOSITION,
+	COUNT(*) AS TOTAL_RESERVATION_CNT
+FROM CLEANED_HOTEL_BOOKINGS_MV4
+GROUP BY 1
+ORDER BY 2 DESC;
+
+-- most popular room & meal selection
+
+SELECT ROOM_TYPE,
+	CASE
+		WHEN TYPE_OF_MEAL_PLAN = 'Not Selected' THEN 'No meal'
+		ELSE 'Meal'
+	END AS MEAL_SELECTION,
+	COUNT(*) AS TOTAL_RESERVATION_CNT
+FROM CLEANED_HOTEL_BOOKINGS_MV4
+GROUP BY 1,2
+ORDER BY 1,2;
+
+-- average_length_of_stay
+
+SELECT ROUND(AVG(no_of_weekend_nights+no_of_week_nights),0) AS AVG_LENGTH_OF_STAY
+FROM CLEANED_HOTEL_BOOKINGS_MV4;
+
+-- % of reservations made by repeated guests
+SELECT CASE WHEN repeated_guest =1 THEN 'Returning' ELSE 'New' END AS guest_type,
+count(*) AS total_reservation_cnt,
+ROUND(count(*)::NUMERIC/(SELECT count(*) FROM CLEANED_HOTEL_BOOKINGS_MV4)*100,0) AS retained_customers_percentage
+FROM CLEANED_HOTEL_BOOKINGS_MV4
+GROUP BY 1;
+
+-- average lead time & its correclation with cancellations
+SELECT CASE
+			WHEN LEAD_TIME <= (365 / 12) THEN '1.) 1 month & less'
+			WHEN LEAD_TIME > (365 / 12) AND LEAD_TIME <= ((365 / 12) * 3) THEN '2.) 1 - 3 months'
+			WHEN LEAD_TIME > ((365 / 12) * 3)AND LEAD_TIME <= ((365 / 12) * 6) THEN '3.) 3 - 6 months'
+			WHEN LEAD_TIME > ((365 / 12) * 6)AND LEAD_TIME <= ((365 / 12) * 9) THEN '4.) 6 - 9 months'
+			WHEN LEAD_TIME > ((365 / 12) * 9)AND LEAD_TIME <= 365 THEN '5.) 9 - 12 months'
+			ELSE '6.) 12+ months'
+			END AS LEAD_TIME_GROUPED,
+	COUNT(*) AS TOTAL_RESERVATION_CNT,
+	ROUND((SUM(CASE WHEN BOOKING_STATUS = 'Canceled' THEN 1 ELSE 0 END) / COUNT(*) ::NUMERIC) * 100, 0) AS CANCELATION_PERCENTAGE
+FROM CLEANED_HOTEL_BOOKINGS_MV4
+GROUP BY 1
+ORDER BY 1;
+
+-- find average hotel occupation per night every month (not cancelled reservations only)
+
+--create table with each occupation date for every booking_id
+WITH OCCUPATION AS 
+ 	(SELECT BOOKING_ID, ARRIVAL_DATE_FULL,
+	CASE WHEN NO_OF_NIGHT = 1 THEN ARRIVAL_DATE_FULL ELSE ARRIVAL_DATE_FULL + (NO_OF_NIGHT-1) END AS OCCUPATION_DATE
+	FROM
+	--generate series of night numbers for each reservation
+		(SELECT BOOKING_ID, 
+		ARRIVAL_DATE_FULL,
+		GENERATE_SERIES(1, (CASE WHEN NO_OF_WEEKEND_NIGHTS + NO_OF_WEEK_NIGHTS = 0 
+								THEN 1 ELSE NO_OF_WEEKEND_NIGHTS + NO_OF_WEEK_NIGHTS END)) AS NO_OF_NIGHT
+		FROM CLEANED_HOTEL_BOOKINGS_MV4
+		WHERE booking_status = 'Not_Canceled')
+	)
+--main query 
+SELECT 
+ EXTRACT (YEAR FROM O.OCCUPATION_DATE) AS OCC_YEAR,
+	EXTRACT (MONTH FROM O.OCCUPATION_DATE) AS OCC_MONTH,
+	COUNT (B.BOOKING_ID) AS TOTAL_ROOMS_NIGHTS,
+	COUNT (DISTINCT O.BOOKING_ID) AS DISTINCT_BOOKINGS,
+	ROUND(COUNT (B.BOOKING_ID)::numeric/(365/12),0) as avg_hotel_occupation_per_night
+FROM CLEANED_HOTEL_BOOKINGS_MV4 AS B
+LEFT JOIN OCCUPATION AS O ON B.BOOKING_ID = O.BOOKING_ID
+WHERE b.booking_status = 'Not_Canceled'
+GROUP BY 1,2
+ORDER BY 1,2;
+
+--create materialized view with each occupation date for every booking_id
+
+CREATE MATERIALIZED VIEW each_booking_occ_dates AS
+SELECT BOOKING_ID, ARRIVAL_DATE_FULL,
+CASE WHEN NO_OF_NIGHT = 1 THEN ARRIVAL_DATE_FULL ELSE ARRIVAL_DATE_FULL + (NO_OF_NIGHT-1) END AS OCCUPATION_DATE
+FROM
+		(SELECT BOOKING_ID, 
+		ARRIVAL_DATE_FULL,
+		GENERATE_SERIES(1, (CASE WHEN NO_OF_WEEKEND_NIGHTS + NO_OF_WEEK_NIGHTS = 0 
+								THEN 1 ELSE NO_OF_WEEKEND_NIGHTS + NO_OF_WEEK_NIGHTS END)) AS NO_OF_NIGHT
+		FROM CLEANED_HOTEL_BOOKINGS_MV4
+		WHERE booking_status = 'Not_Canceled')
+
+
+-- find max number of non-cancelled occupations per 1 day for each room type
+
+SELECT ROOM_TYPE,
+MAX(RESERVATION_CNT_PER_DAY)
+FROM
+	(SELECT occupation_date,
+	room_type,
+	count(*) as RESERVATION_CNT_PER_DAY
+	FROM CLEANED_HOTEL_BOOKINGS_MV4 as b
+	LEFT JOIN each_booking_occ_dates as o on o.booking_id = b.booking_id
+	WHERE BOOKING_STATUS = 'Not_Canceled'
+	GROUP BY 1,2)
+GROUP BY 1
+ORDER BY 1;
+
+
+--find max available room occupation in a hotel
+WITH MAX_ROOMS_AVAILABLE AS
+	(SELECT ROOM_TYPE,
+	MAX(RESERVATION_CNT_PER_DAY) AS MAX_ROOM_AVAILABILITY
+	FROM
+	(SELECT occupation_date,
+	room_type,
+	count(*) as RESERVATION_CNT_PER_DAY
+	FROM CLEANED_HOTEL_BOOKINGS_MV4 as b
+	LEFT JOIN each_booking_occ_dates as o on o.booking_id = b.booking_id
+	WHERE BOOKING_STATUS = 'Not_Canceled'
+	GROUP BY 1,2)
+GROUP BY 1
+ORDER BY 1)
+SELECT SUM(MAX_ROOM_AVAILABILITY)
+FROM MAX_ROOMS_AVAILABLE;
+
+-- find occupation rate (% of rooms occupied from all available) every day;
+SELECT 
+	EXTRACT(YEAR FROM OCCUPATION_DATE) AS OCC_YEAR,
+	EXTRACT(MONTH FROM OCCUPATION_DATE) AS OCC_MONTH,
+	ROUND(AVG (OCCUPATION_RATE),0) AS AVG_OCC_PRC
+FROM (
+	
+	--2.create table with each occupation date for every booking_id
+	WITH OCCUPATION AS(
+		SELECT BOOKING_ID, ARRIVAL_DATE_FULL,
+		CASE WHEN NO_OF_NIGHT = 1 THEN ARRIVAL_DATE_FULL ELSE ARRIVAL_DATE_FULL + (NO_OF_NIGHT-1) END AS OCCUPATION_DATE
+		FROM
+			(SELECT BOOKING_ID, --1.generate series of night numbers for each reservation
+			ARRIVAL_DATE_FULL,
+			GENERATE_SERIES(1, (CASE WHEN NO_OF_WEEKEND_NIGHTS + NO_OF_WEEK_NIGHTS = 0 THEN 1 ELSE NO_OF_WEEKEND_NIGHTS + NO_OF_WEEK_NIGHTS END)) AS NO_OF_NIGHT
+			FROM CLEANED_HOTEL_BOOKINGS_MV4
+			WHERE booking_status = 'Not_Canceled')
+				),
+	-- 3.
+	MAX_ROOMS_AVAILABLE AS(
+		SELECT SUM(MAX_ROOM_AVAILABILITY) AS max_room_cnt
+		FROM 
+			(SELECT ROOM_TYPE,
+		MAX(RESERVATION_CNT_PER_DAY) AS MAX_ROOM_AVAILABILITY
+		FROM
+		(SELECT occupation_date,
+		room_type,
+		count(*) as RESERVATION_CNT_PER_DAY
+		FROM CLEANED_HOTEL_BOOKINGS_MV4 as b
+		LEFT JOIN each_booking_occ_dates as o on o.booking_id = b.booking_id
+		WHERE BOOKING_STATUS = 'Not_Canceled'
+		GROUP BY 1,2)
+	GROUP BY 1
+	ORDER BY 1)
+						)
+
+	--4.Main query
+	SELECT O.OCCUPATION_DATE,
+		COUNT (O.BOOKING_ID) AS TOTAL_ROOMS_NIGHTS,
+		COUNT (DISTINCT O.BOOKING_ID) AS DISTINCT_BOOKINGS,
+		ROUND((COUNT (DISTINCT O.BOOKING_ID)::NUMERIC / max_occ.MAX_ROOM_CNT)*100,2) AS OCCUPATION_RATE
+	FROM CLEANED_HOTEL_BOOKINGS_MV4 AS B
+	LEFT JOIN OCCUPATION AS O ON B.BOOKING_ID = O.BOOKING_ID
+	 CROSS JOIN MAX_ROOMS_AVAILABLE AS max_occ
+	WHERE B.BOOKING_STATUS = 'Not_Canceled'
+	GROUP BY O.OCCUPATION_DATE, max_occ.MAX_ROOM_CNT
+	)
+GROUP BY 1,2
+ORDER BY 1,2
+
+-- revenue per day
+
+SELECT o.occupation_date,
+SUM(b.avg_price_per_room) as revenue_per_day
+FROM CLEANED_HOTEL_BOOKINGS_MV4 AS b
+LEFT JOIN each_booking_occ_dates AS o ON b.booking_id = o.booking_id
+WHERE b.booking_status = 'Not_Canceled'
+GROUP BY 1
+ORDER BY 1;
+
+
+--revenue per day per available room
+WITH MAX_ROOMS_AVAILABLE AS(
+	SELECT SUM(MAX_ROOM_AVAILABILITY) AS max_room_cnt
+	FROM 
+		(SELECT ROOM_TYPE,
+	MAX(RESERVATION_CNT_PER_DAY) AS MAX_ROOM_AVAILABILITY
+	FROM
+	(SELECT occupation_date,
+	room_type,
+	count(*) as RESERVATION_CNT_PER_DAY
+	FROM CLEANED_HOTEL_BOOKINGS_MV4 as b
+	LEFT JOIN each_booking_occ_dates as o on o.booking_id = b.booking_id
+	WHERE BOOKING_STATUS = 'Not_Canceled'
+	GROUP BY 1,2)
+GROUP BY 1
+ORDER BY 1))
+,
+revenue_per_day AS (
+	SELECT o.occupation_date,
+	SUM(b.avg_price_per_room) as revenue_per_day
+	FROM CLEANED_HOTEL_BOOKINGS_MV4 AS b
+	LEFT JOIN each_booking_occ_dates AS o ON b.booking_id = o.booking_id
+	WHERE b.booking_status = 'Not_Canceled'
+	GROUP BY 1
+	ORDER BY 1)
+-- main query
+SELECT occupation_date,
+	ROUND(r.revenue_per_day::numeric/ m.max_room_cnt,2) as revenue_per_room_available
+FROM revenue_per_day as r
+	CROSS JOIN MAX_ROOMS_AVAILABLE as m
+GROUP BY r.occupation_date,m.max_room_cnt,r.revenue_per_day
+	ORDER BY 1 
