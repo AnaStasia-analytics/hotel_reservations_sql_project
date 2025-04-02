@@ -74,6 +74,9 @@ Identifying customer profiles and preferences.
 Evaluating performance and profitability.
 
 •	Average monthly and yearly room occupation.
+
 •	Occupation rate (actual vs. available rooms).
+
 •	Monthly and yearly revenue.
+
 •	Revenue per available room (RevPAR).
